@@ -259,6 +259,84 @@ async def update_tickets_payment_status(session: AsyncSession, payment_id: str, 
         
         # Если платеж успешен, обновляем статус билетов
         if status == "succeeded":
+            # Находим пользователя
+            user_query = select(TelegramUser).where(TelegramUser.id == user_id)
+            user_result = await session.execute(user_query)
+            user = user_result.scalar_one_or_none()
+            
+            if not user:
+                logger.error(f"Пользователь с ID {user_id} не найден")
+                return False, []
+            
+            # Находим приз
+            prize_query = select(Prize).where(Prize.id == prize_id)
+            prize_result = await session.execute(prize_query)
+            prize = prize_result.scalar_one_or_none()
+            
+            if not prize:
+                logger.error(f"Приз с ID {prize_id} не найден")
+                return False, []
+            
+            # Рассчитываем общую сумму
+            total_amount = len(tickets) * float(prize.ticket_price)
+            
+            # Создаем запись в модели Payment
+            from sqlalchemy import Table, Column, Integer, String, Boolean, DateTime, ForeignKey, Float, MetaData
+            
+            # Получаем метаданные
+            metadata = MetaData()
+            
+            # Определяем таблицу Payment
+            payment_table = Table(
+                'prizes_payment',
+                metadata,
+                Column('id', Integer, primary_key=True),
+                Column('user_id', Integer, ForeignKey('prizes_telegramuser.id')),
+                Column('prize_id', Integer, ForeignKey('prizes_prize.id')),
+                Column('amount', Float),
+                Column('payment_id', String(255)),
+                Column('is_successful', Boolean, default=True),
+                Column('created_at', DateTime),
+                Column('updated_at', DateTime)
+            )
+            
+            # Определяем таблицу для связи Payment и Ticket (many-to-many)
+            payment_ticket_table = Table(
+                'prizes_payment_tickets',
+                metadata,
+                Column('id', Integer, primary_key=True),
+                Column('payment_id', Integer, ForeignKey('prizes_payment.id')),
+                Column('ticket_id', Integer, ForeignKey('prizes_ticket.id'))
+            )
+            
+            # Создаем запись в таблице Payment
+            from sqlalchemy import insert
+            from datetime import datetime
+            
+            now = datetime.now()
+            
+            payment_insert = insert(payment_table).values(
+                user_id=user_id,
+                prize_id=prize_id,
+                amount=total_amount,
+                payment_id=payment_id,
+                is_successful=True,
+                created_at=now,
+                updated_at=now
+            )
+            
+            payment_result = await session.execute(payment_insert)
+            payment_id_db = payment_result.inserted_primary_key[0]
+            
+            # Создаем записи в таблице связи Payment и Ticket
+            for ticket in tickets:
+                payment_ticket_insert = insert(payment_ticket_table).values(
+                    payment_id=payment_id_db,
+                    ticket_id=ticket.id
+                )
+                await session.execute(payment_ticket_insert)
+            
+            # Обновляем статус билетов
             for ticket in tickets:
                 ticket.is_paid = True
                 ticket.is_reserved = False
@@ -267,6 +345,7 @@ async def update_tickets_payment_status(session: AsyncSession, payment_id: str, 
             
             await session.commit()
             logger.info(f"Статус оплаты билетов обновлен на 'оплачено' для пользователя {user_id}")
+            logger.info(f"Создана запись в модели Payment с ID {payment_id_db}")
             return True, tickets
         else:
             logger.info(f"Платеж {payment_id} имеет статус {status}, билеты остаются зарезервированными")
