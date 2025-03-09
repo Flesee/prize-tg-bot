@@ -24,9 +24,6 @@ async def get_or_create_user(telegram_id: int, full_name: str, username: Optiona
     if username and not username.startswith('@'):
         username = f"@{username}"
     
-    # Логируем информацию о пользователе
-    logger.info(f"Сохраняем пользователя в базу данных: {telegram_id}, {full_name}, {username}")
-    
     try:
         async with async_session() as session:
             # Ищем пользователя по telegram_id
@@ -83,4 +80,4 @@ async def get_or_create_user(telegram_id: int, full_name: str, username: Optiona
             "telegram_id": telegram_id,
             "full_name": full_name,
             "username": username
-        }, False 
+        }, False

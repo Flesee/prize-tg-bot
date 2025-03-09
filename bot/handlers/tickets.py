@@ -116,8 +116,8 @@ async def check_payment_status_periodically(payment_id: str, user_id: int, messa
         await cancel_all_reservations(user_id)
         
         await message.edit_text(
-            f"⏱ Время ожидания оплаты истекло. Резервация билетов отменена.\n\n"
-            f"Вы можете попробовать снова или выбрать другие билеты.",
+            "⏱ Время ожидания оплаты истекло. Резервация билетов отменена.\n\n"
+            "Вы можете попробовать снова или выбрать другие билеты.",
             reply_markup=get_back_keyboard()
         )
         
@@ -336,6 +336,5 @@ async def process_payment(callback: CallbackQuery):
             check_payment_status_periodically(payment_id, user.id, callback.message)
         )
         payment_check_timers[payment_id] = task
-        
-        # Отвечаем на callback
+
         await callback.answer()
