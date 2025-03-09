@@ -1,0 +1,52 @@
+services:
+  db:
+    image: postgres:16-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    env_file:
+      - ./.env
+    environment:
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_DB=${DB_NAME}
+    restart: always
+
+  admin:
+    build: ./admin
+    restart: always
+    depends_on:
+      - db
+    env_file:
+      - ./.env
+    environment:
+      - HOST=${HOST:-localhost}
+      - PORT=${PORT:-8000}
+    volumes:
+      - ./admin:/app
+      - static_value:/app/static/
+      - media_value:/app/media/
+      - ./logs:/app/logs
+    ports:
+      - '${PORT:-8000}:8000'
+
+  bot:
+    build: ./bot
+    restart: always
+    depends_on:
+      - db
+      - admin
+    env_file:
+      - ./.env
+    volumes:
+      - ./bot:/app
+      - ./logs:/app/logs
+      - media_value:/app/media:ro
+    environment:
+      - MEDIA_ROOT=/app/media
+      - HOST=${HOST:-localhost}
+      - PORT=${PORT:-8000}
+
+volumes:
+  postgres_data:
+  static_value:
+  media_value:

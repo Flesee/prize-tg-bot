@@ -1,0 +1,22 @@
+# Установка окончаний строк по умолчанию для всех текстовых файлов
+* text=auto
+
+# Явно указываем файлы, которые должны иметь LF окончания строк
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+
+# Бинарные файлы, которые не должны изменяться
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.pdf binary 
