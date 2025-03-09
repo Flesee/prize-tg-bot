@@ -270,13 +270,9 @@ async def deactivate_all_active_prizes() -> None:
             now = make_naive(datetime.now())
             prize_end_date = make_naive(prize.end_date)
             
-            # Преобразуем даты в московское время для логирования
-            now_moscow = convert_to_moscow_time(now)
-            prize_end_date_moscow = convert_to_moscow_time(prize_end_date)
-            
             if prize_end_date <= now:
                 prize.is_active = False
-                prize.winner_determined = True
+
                 session.add(prize)
                 logger.info(f"Розыгрыш {prize.id} автоматически завершен по истечении времени")
         
