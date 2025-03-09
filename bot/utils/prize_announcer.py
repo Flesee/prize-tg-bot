@@ -1,11 +1,11 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Tuple
 
 from aiogram import Bot
 from aiogram.types import InputMediaPhoto, FSInputFile
 from aiogram.exceptions import TelegramBadRequest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from database.base import async_session
 from database.models import Prize, Ticket
@@ -20,6 +20,24 @@ def make_naive(dt: datetime) -> datetime:
     if dt.tzinfo is not None:
         return dt.replace(tzinfo=None)
     return dt
+
+
+def convert_to_moscow_time(dt: datetime) -> datetime:
+    """
+    Преобразует время из UTC в московское время (UTC+3).
+    """
+    # Проверяем, имеет ли дата информацию о часовом поясе
+    if dt.tzinfo is None:
+        # Если нет, предполагаем, что это UTC
+        dt = dt.replace(tzinfo=timezone.utc)
+    
+    # Определяем смещение для московского времени (UTC+3)
+    moscow_offset = timedelta(hours=3)
+    
+    # Преобразуем в московское время
+    moscow_time = dt.astimezone(timezone(moscow_offset))
+    
+    return moscow_time
 
 
 async def get_active_prize() -> Optional[Prize]:
@@ -38,6 +56,7 @@ async def get_pending_prize() -> Optional[Prize]:
     """
     async with async_session() as session:
         now = make_naive(datetime.now())
+        
         query = select(Prize).where(
             (Prize.is_active == False) & 
             (Prize.winner_determined == False) & 
@@ -46,7 +65,9 @@ async def get_pending_prize() -> Optional[Prize]:
         ).order_by(Prize.start_date)
         
         result = await session.execute(query)
-        return result.scalar_one_or_none()
+        pending_prize = result.scalar_one_or_none()
+        
+        return pending_prize
 
 
 async def get_available_ticket_numbers(prize_id: int) -> List[int]:
@@ -97,9 +118,12 @@ async def format_prize_message(prize: Prize, bot_username: str) -> Tuple[str, Op
     # Получаем доступные номера билетов
     available_tickets = await get_available_ticket_numbers(prize.id)
     
-    # Форматируем даты
-    start_date = prize.start_date.strftime("%d.%m.%Y %H:%M")
-    end_date = prize.end_date.strftime("%d.%m.%Y %H:%M")
+    # Преобразуем даты в московское время и форматируем
+    start_date_moscow = convert_to_moscow_time(prize.start_date)
+    end_date_moscow = convert_to_moscow_time(prize.end_date)
+    
+    start_date = start_date_moscow.strftime("%d.%m.%Y %H:%M")
+    end_date = end_date_moscow.strftime("%d.%m.%Y %H:%M")
     
     # Форматируем цену билета
     ticket_price = format_price(prize.ticket_price)
@@ -245,6 +269,10 @@ async def deactivate_all_active_prizes() -> None:
             # Проверяем, не закончился ли розыгрыш
             now = make_naive(datetime.now())
             prize_end_date = make_naive(prize.end_date)
+            
+            # Преобразуем даты в московское время для логирования
+            now_moscow = convert_to_moscow_time(now)
+            prize_end_date_moscow = convert_to_moscow_time(prize_end_date)
             
             if prize_end_date <= now:
                 prize.is_active = False
