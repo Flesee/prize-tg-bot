@@ -62,8 +62,8 @@ class TelegramUserAdmin(admin.ModelAdmin):
         html = "<ul>"
         for prize in prizes:
             tickets = obj.get_tickets_for_prize(prize)
-            ticket_numbers = ", ".join([f"#{t.ticket_number}" for t in tickets])
-            html += f"<li><strong>{prize.title}</strong>: Билеты {ticket_numbers}</li>"
+            ticket_numbers = " ".join([f"{t.ticket_number}" for t in tickets])
+            html += f"<li><strong>{prize.title}</strong>: Билеты - {ticket_numbers}</li>"
         html += "</ul>"
         return format_html(html)
     active_prizes_display.short_description = "Активные розыгрыши"
@@ -117,12 +117,11 @@ class TelegramUserAdmin(admin.ModelAdmin):
 
 @admin.register(Prize)
 class PrizeAdmin(admin.ModelAdmin):
-    list_display = ('title', 'start_date', 'end_date', 'ticket_price', 'ticket_count', 'is_active', 'winner_display', 'tickets_sold')
+    list_display = ('title', 'start_date', 'end_date', 'ticket_price', 'ticket_count', 'is_active', 'tickets_sold')
     search_fields = ('title',)
-    list_filter = ('is_active', 'start_date', 'end_date', 'winner_determined')
-    readonly_fields = ('created_at', 'updated_at', 'winner', 'winning_ticket', 'winner_determined', 'determine_winner_button', 'tickets_sold')
+    list_filter = ('is_active', 'start_date', 'end_date')
+    readonly_fields = ('created_at', 'updated_at', 'tickets_sold', 'is_active', 'participants_display')
     inlines = [TicketInline]
-    actions = ['determine_winner_action']
     
     fieldsets = (
         (None, {
@@ -134,206 +133,46 @@ class PrizeAdmin(admin.ModelAdmin):
         ('Настройки', {
             'fields': ('ticket_price', 'ticket_count', 'is_active')
         }),
-        ('Результаты', {
-            'fields': ('winner', 'winning_ticket', 'winner_determined', 'determine_winner_button', 'tickets_sold')
+        ('Участники', {
+            'fields': ('participants_display', 'tickets_sold')
         }),
         ('Информация', {
             'fields': ('created_at', 'updated_at')
         }),
     )
     
-    def winner_display(self, obj):
-        """Отображение победителя."""
-        if obj.winner:
-            # Если есть username, используем его
-            if obj.winner.username:
-                display_name = obj.winner.username
-            else:
-                # Иначе формируем команду /chat<user_id>
-                display_name = f"/chat{obj.winner.telegram_id} (отправьте боту для получения ссылки)"
-            
-            return f"{display_name} (Билет #{obj.winning_ticket})"
-        return "Не определен"
-    winner_display.short_description = "Победитель"
-    
     def tickets_sold(self, obj):
         """Количество проданных билетов."""
         return obj.tickets.filter(is_paid=True).count()
     tickets_sold.short_description = "Продано билетов"
     
-    def determine_winner_action(self, request, queryset):
-        """Действие для определения победителя."""
-        for prize in queryset:
-            try:
-                if prize.winner_determined:
-                    # Если есть username, используем его
-                    if prize.winner.username:
-                        display_name = prize.winner.username
-                    else:
-                        # Иначе формируем команду /chat<user_id>
-                        display_name = f"/chat{prize.winner.telegram_id} (отправьте боту для получения ссылки)"
-                    
-                    self.message_user(
-                        request, 
-                        f"Победитель для розыгрыша '{prize.title}' уже определен: {display_name} (Билет #{prize.winning_ticket})",
-                        level=messages.WARNING
-                    )
-                    continue
-                
-                # Проверяем наличие оплаченных билетов
-                paid_tickets = prize.tickets.filter(is_paid=True)
-                if not paid_tickets.exists():
-                    self.message_user(
-                        request, 
-                        f"Не удалось определить победителя для розыгрыша '{prize.title}'. Нет оплаченных билетов.",
-                        level=messages.ERROR
-                    )
-                    continue
-                
-                # Определяем победителя
-                winner, winning_ticket = prize.determine_winner()
-                
-                if winner:
-                    # Если есть username, используем его
-                    if winner.username:
-                        display_name = winner.username
-                    else:
-                        # Иначе формируем команду /chat<user_id>
-                        display_name = f"/chat{winner.telegram_id} (отправьте боту для получения ссылки)"
-                    
-                    self.message_user(
-                        request, 
-                        f"Победитель для розыгрыша '{prize.title}' определен: {display_name} (Билет #{winning_ticket})",
-                        level=messages.SUCCESS
-                    )
-                else:
-                    self.message_user(
-                        request, 
-                        f"Не удалось определить победителя для розыгрыша '{prize.title}'. Произошла ошибка.",
-                        level=messages.ERROR
-                    )
-            except ValidationError as e:
-                self.message_user(
-                    request, 
-                    f"Ошибка валидации при определении победителя для розыгрыша '{prize.title}': {e}",
-                    level=messages.ERROR
-                )
-            except Exception as e:
-                self.message_user(
-                    request, 
-                    f"Ошибка при определении победителя для розыгрыша '{prize.title}': {e}",
-                    level=messages.ERROR
-                )
-    determine_winner_action.short_description = "Определить победителя"
-    
-    def determine_winner_button(self, obj):
-        """Кнопка для определения победителя внутри формы редактирования."""
-        if obj.pk and not obj.winner_determined:
-            url = reverse('admin:determine-winner', args=[obj.pk])
-            return format_html(
-                '<a class="button" href="{}">Определить победителя</a>',
-                url
-            )
-        elif obj.winner_determined:
-            # Если есть победитель
-            if obj.winner:
-                # Если есть username, используем его
-                if obj.winner.username:
-                    display_name = obj.winner.username
-                else:
-                    # Иначе формируем команду /chat<user_id>
-                    display_name = f"/chat{obj.winner.telegram_id} (отправьте боту для получения ссылки)"
-                
-                return format_html(
-                    '<div style="color: green;">Победитель определен: {} (Билет #{})</div>',
-                    display_name,
-                    obj.winning_ticket
-                )
-            else:
-                return format_html(
-                    '<div style="color: green;">Победитель определен, но информация о нем отсутствует</div>'
-                )
-        return "Сохраните розыгрыш перед определением победителя"
-    determine_winner_button.short_description = "Определение победителя"
-    
-    def get_urls(self):
-        from django.urls import path
-        urls = super().get_urls()
-        custom_urls = [
-            path(
-                '<int:prize_id>/determine-winner/',
-                self.admin_site.admin_view(self.determine_winner_view),
-                name='determine-winner',
-            ),
-        ]
-        return custom_urls + urls
-    
-    def determine_winner_view(self, request, prize_id):
-        """Представление для определения победителя."""
-        prize = self.get_object(request, prize_id)
+    def participants_display(self, obj):
+        """Отображение участников розыгрыша с их билетами."""
+        participants = obj.get_participants()
         
-        if prize.winner_determined:
-            # Если есть username, используем его
-            if prize.winner.username:
-                display_name = prize.winner.username
-            else:
-                # Иначе формируем команду /chat<user_id>
-                display_name = f"/chat{prize.winner.telegram_id} (отправьте боту для получения ссылки)"
+        if not participants:
+            return "Нет участников"
+        
+        html = "<ul>"
+        for participant_data in participants.values():
+            user = participant_data['user']
+            tickets = participant_data['tickets']
             
-            self.message_user(
-                request, 
-                f"Победитель для розыгрыша '{prize.title}' уже определен: {display_name} (Билет #{prize.winning_ticket})",
-                level=messages.WARNING
-            )
-            return HttpResponseRedirect(reverse('admin:prizes_prize_change', args=[prize_id]))
-        
-        # Проверяем наличие оплаченных билетов
-        paid_tickets = prize.tickets.filter(is_paid=True)
-        if not paid_tickets.exists():
-            self.message_user(
-                request, 
-                f"Не удалось определить победителя для розыгрыша '{prize.title}'. Нет оплаченных билетов.",
-                level=messages.ERROR
-            )
-            return HttpResponseRedirect(reverse('admin:prizes_prize_change', args=[prize_id]))
-        
-        try:
-            # Определяем победителя
-            winner, winning_ticket = prize.determine_winner()
-            
-            if winner:
-                # Если есть username, используем его
-                if winner.username:
-                    display_name = winner.username
-                else:
-                    # Иначе формируем команду /chat<user_id>
-                    display_name = f"/chat{winner.telegram_id} (отправьте боту для получения ссылки)"
-                
-                self.message_user(
-                    request, 
-                    f"Победитель для розыгрыша '{prize.title}' определен: {display_name} (Билет #{winning_ticket})",
-                    level=messages.SUCCESS
-                )
+            # Используем username, если есть, иначе telegram_id
+            if user.username:
+                display_name = f"{user.username}"
             else:
-                self.message_user(
-                    request, 
-                    f"Не удалось определить победителя для розыгрыша '{prize.title}'. Произошла ошибка.",
-                    level=messages.ERROR
-                )
-        except ValidationError as e:
-            self.message_user(
-                request, 
-                f"Ошибка валидации при определении победителя для розыгрыша '{prize.title}': {e}",
-                level=messages.ERROR
-            )
-        except Exception as e:
-            self.message_user(
-                request, 
-                f"Ошибка при определении победителя для розыгрыша '{prize.title}': {e}",
-                level=messages.ERROR
-            )
+                display_name = f"{user.telegram_id}"
+            
+            # Сортируем билеты для лучшего отображения
+            sorted_tickets = sorted(tickets)
+            tickets_str = " ".join([str(t) for t in sorted_tickets])
+            
+            html += f"<li><strong>{display_name}</strong> - {tickets_str}</li>"
+        html += "</ul>"
         
-        return HttpResponseRedirect(reverse('admin:prizes_prize_change', args=[prize_id]))
+        return format_html(html)
+    participants_display.short_description = "Участники розыгрыша"
     
     def save_model(self, request, obj, form, change):
         """Переопределение метода сохранения для обработки активации розыгрыша."""
@@ -376,16 +215,19 @@ class PaymentAdmin(admin.ModelAdmin):
 
 @admin.register(FAQ)
 class FAQAdmin(admin.ModelAdmin):
-    list_display = ('question', 'is_active', 'order', 'created_at')
-    search_fields = ('question', 'answer')
+    list_display = ('__str__', 'is_active', 'created_at')
     list_filter = ('is_active', 'created_at')
     readonly_fields = ('created_at', 'updated_at')
-    list_editable = ('is_active', 'order')
     fieldsets = (
         ('Основная информация', {
-            'fields': ('question', 'answer', 'is_active', 'order')
+            'fields': ('text', 'is_active')
         }),
         ('Информация', {
             'fields': ('created_at', 'updated_at')
         }),
-    ) 
+    )
+    
+    def has_add_permission(self, request):
+        """Проверка разрешения на добавление записи."""
+        # Если уже есть запись, запрещаем создание новых
+        return not FAQ.objects.exists() 

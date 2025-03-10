@@ -2,7 +2,11 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from database.models import Ticket, TelegramUser
+from sqlalchemy.future import select
 import asyncio
+from datetime import datetime
+from sqlalchemy import and_
 
 from utils.logger import logger
 from utils.formatting import format_price, format_ticket_numbers
@@ -10,6 +14,8 @@ from database import get_active_prize, get_available_tickets, reserve_tickets, p
 from database.base import async_session
 from services.payment_service import init_payment, check_payment_status, update_tickets_payment_status, get_payment_by_id
 from keyboards import get_cancel_keyboard, get_back_keyboard, get_payment_keyboard
+from services.payment_service import update_tickets_payment_status
+from database.user_repository import get_or_create_user
 
 
 class TicketStates(StatesGroup):
@@ -29,8 +35,8 @@ async def cancel_reservation_after_timeout(user_id: int, message: Message):
     Отменяет резервацию билетов после таймаута и обновляет сообщение.
     """
     try:
-        # Ждем 1 минуту
-        await asyncio.sleep(60)
+        # Ждем 2 минуты
+        await asyncio.sleep(120)
         
         # Проверяем, не была ли резервация уже отменена или оплачена
         success, message_text = await cancel_all_reservations(user_id)
@@ -151,26 +157,37 @@ async def buy_ticket(callback: CallbackQuery, state: FSMContext):
     if not prize:
         await callback.answer("В данный момент нет активных розыгрышей", show_alert=True)
         return
-
+    
     available_tickets = await get_available_tickets(prize["id"])
     
     if not available_tickets:
         await callback.answer("К сожалению, нет доступных билетов", show_alert=True)
         return
     
+    # Проверяем, бесплатный ли розыгрыш
+    is_free_prize = prize["ticket_price"] is None or float(prize["ticket_price"] or 0) == 0
+    
     # Форматируем список доступных билетов
     formatted_tickets = format_ticket_numbers(available_tickets)
     
     # Форматируем цену билета
-    formatted_price = format_price(prize["ticket_price"])
+    formatted_price = format_price(prize["ticket_price"] or 0)
     
     # Формируем сообщение с информацией о призе и доступных билетах
-    message_text = (
-        f"🎁 *{prize['title']}*\n\n"
-        f"💰 Стоимость билета: {formatted_price}\n"
-        f"🎟 Доступные билеты:\n{formatted_tickets}\n\n"
-        f"Введите номера билетов, которые хотите купить (через пробел):"
-    )
+    if is_free_prize:
+        message_text = (
+            f"🎁 *{prize['title']}*\n\n"
+            f"💰 Стоимость билета: {formatted_price}\n"
+            f"🎟 Доступные билеты:\n{formatted_tickets}\n\n"
+            f"Введите номер билета, который хотите получить:"
+        )
+    else:
+        message_text = (
+            f"🎁 *{prize['title']}*\n\n"
+            f"💰 Стоимость билета: {formatted_price}\n"
+            f"🎟 Доступные билеты:\n{formatted_tickets}\n\n"
+            f"Введите номера билетов, которые хотите купить (через пробел):"
+        )
 
     await state.update_data(prize_id=prize["id"])
 
@@ -211,6 +228,9 @@ async def process_ticket_numbers(message: Message, state: FSMContext):
         await state.clear()
         return
     
+    # Проверяем, бесплатный ли розыгрыш (стоимость билета = 0)
+    is_free_prize = prize["ticket_price"] is None or float(prize["ticket_price"] or 0) == 0
+    
     # Парсим номера билетов из сообщения
     ticket_numbers = await parse_ticket_numbers(message.text)
     
@@ -220,8 +240,19 @@ async def process_ticket_numbers(message: Message, state: FSMContext):
             reply_markup=get_cancel_keyboard()
         )
         return
-
+    
     available_tickets = await get_available_tickets(prize_id)
+    formatted_available = format_ticket_numbers(available_tickets)
+
+    # Для бесплатных розыгрышей ограничиваем одним билетом на пользователя
+    if is_free_prize and len(ticket_numbers) > 1:
+        await message.answer(
+            "В бесплатном розыгрыше можно выбрать только один билет.\n\n"
+            f"Доступные билеты: {formatted_available}",
+            reply_markup=get_cancel_keyboard()
+        )
+        return
+    
     
     # Проверяем, доступны ли все запрошенные билеты
     unavailable_tickets = [num for num in ticket_numbers if num not in available_tickets]
@@ -241,6 +272,96 @@ async def process_ticket_numbers(message: Message, state: FSMContext):
         )
         return
     
+    # Для бесплатных билетов сразу отмечаем их как оплаченные
+    if is_free_prize:
+        
+        # Проверяем, есть ли уже оплаченные билеты у пользователя
+        async with async_session() as session:
+            # Находим пользователя по telegram_id
+            user_query = select(TelegramUser).where(TelegramUser.telegram_id == user.id)
+            user_result = await session.execute(user_query)
+            db_user = user_result.scalar_one_or_none()
+            
+            if not db_user:
+                logger.error(f"Пользователь с telegram_id {user.id} не найден в базе данных")
+                await message.answer(
+                    "Произошла ошибка при обработке билета. Пожалуйста, попробуйте еще раз.",
+                    reply_markup=get_cancel_keyboard()
+                )
+                return
+            
+            existing_query = select(Ticket).where(
+                and_(
+                    Ticket.user_id == db_user.id,
+                    Ticket.prize_id == prize_id,
+                    Ticket.is_paid == True
+                )
+            )
+            existing_result = await session.execute(existing_query)
+            existing_tickets = existing_result.scalars().all()
+            
+            if existing_tickets:
+                await message.answer(
+                    "Вы уже участвуете в этом бесплатном розыгрыше. Можно выбрать только один билет.",
+                    reply_markup=get_back_keyboard()
+                )
+                await state.clear()
+                return
+        
+        # Берем первый (и единственный) номер билета
+        ticket_number = ticket_numbers[0]
+        
+        # Находим билет по номеру и id розыгрыша
+        async with async_session() as session:
+            ticket_query = select(Ticket).where(
+                and_(
+                    Ticket.prize_id == prize_id,
+                    Ticket.ticket_number == ticket_number,
+                    Ticket.user_id.is_(None),  # Билет не должен быть привязан к пользователю
+                    Ticket.is_paid == False
+                )
+            )
+            ticket_result = await session.execute(ticket_query)
+            ticket = ticket_result.scalar_one_or_none()
+            
+            if not ticket:
+                await message.answer(
+                    f"Билет #{ticket_number} уже занят или не существует. Пожалуйста, выберите другой билет.",
+                    reply_markup=get_cancel_keyboard()
+                )
+                return
+            
+            # Отмечаем билет как оплаченный и привязываем к пользователю
+            ticket.user_id = db_user.id
+            ticket.is_paid = True
+            ticket.payment_id = f"free_{user.id}_{prize_id}_{datetime.now().timestamp()}"
+            
+            try:
+                await session.commit()
+                logger.info(f"Пользователь {user.id} получил бесплатный билет #{ticket_number} для розыгрыша {prize_id}")
+                
+                # Отправляем сообщение об успешном получении билета
+                await message.answer(
+                    f"🎉 *Вы успешно получили бесплатный билет!*\n\n"
+                    f"🎁 *{prize['title']}*\n\n"
+                    f"🎟 Ваш билет: #{ticket_number}\n\n"
+                    f"Желаем удачи в розыгрыше!",
+                    reply_markup=get_back_keyboard(),
+                    parse_mode="Markdown"
+                )
+                
+                # Очищаем состояние
+                await state.clear()
+                return
+            except Exception as e:
+                logger.error(f"Ошибка при сохранении билета: {e}")
+                await message.answer(
+                    "Произошла ошибка при обработке билета. Пожалуйста, попробуйте еще раз.",
+                    reply_markup=get_cancel_keyboard()
+                )
+                return
+    
+    # Для платных билетов - стандартная логика с резервацией
     # Резервируем билеты
     success, reserved_tickets, message_text = await reserve_tickets(prize_id, user.id, ticket_numbers)
     
@@ -253,7 +374,8 @@ async def process_ticket_numbers(message: Message, state: FSMContext):
         return
     
     # Рассчитываем общую стоимость
-    total_price = len(reserved_tickets) * float(prize["ticket_price"])
+    ticket_price = float(prize["ticket_price"] or 0)
+    total_price = len(reserved_tickets) * ticket_price
     
     # Форматируем цену и номера билетов
     formatted_total_price = format_price(total_price)
@@ -318,7 +440,6 @@ async def process_payment(callback: CallbackQuery):
             f"💳 *Оплата билетов*\n\n"
             f"🎟 Количество билетов: {payment_info['ticket_count']}\n"
             f"💰 Сумма к оплате: {payment_info['formatted_amount']}\n\n"
-            f"⏱ Билеты зарезервированы на 15 минут. Пожалуйста, оплатите их в течение этого времени.\n\n"
             f"Для оплаты нажмите на кнопку ниже:",
             parse_mode="Markdown",
             reply_markup=get_payment_keyboard(payment_info["payment_url"])

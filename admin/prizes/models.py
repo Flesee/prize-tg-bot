@@ -38,18 +38,8 @@ class Prize(models.Model):
     ticket_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Стоимость билета")
     ticket_count = models.PositiveIntegerField(default=0, verbose_name="Количество билетов")
     is_active = models.BooleanField(default=False, verbose_name="Активен")
-    winner = models.ForeignKey(
-        TelegramUser, 
-        on_delete=models.SET_NULL, 
-        blank=True, 
-        null=True, 
-        related_name="won_prizes",
-        verbose_name="Победитель"
-    )
-    winning_ticket = models.PositiveIntegerField(blank=True, null=True, verbose_name="Выигрышный билет")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Дата обновления")
-    winner_determined = models.BooleanField(default=False, verbose_name="Победитель определен")
     chat_message_id = models.BigIntegerField(blank=True, null=True, verbose_name="ID сообщения в чате")
 
     class Meta:
@@ -75,35 +65,32 @@ class Prize(models.Model):
         if self.end_date and self.end_date <= timezone.now():
             raise ValidationError("Дата окончания должна быть в будущем.")
         
-        # Проверка, что стоимость билета положительная
-        if self.ticket_price is not None and self.ticket_price <= 0:
-            raise ValidationError("Стоимость билета должна быть положительной.")
+        # Проверка, что стоимость билета не отрицательная
+        if self.ticket_price is not None and self.ticket_price < 0:
+            raise ValidationError("Стоимость билета не может быть отрицательной.")
         
         # Проверка, что количество билетов положительное
         if self.ticket_count is not None and self.ticket_count <= 0:
             raise ValidationError("Количество билетов должно быть положительным.")
-
-    def determine_winner(self):
-        """Определение победителя розыгрыша."""
-        if self.winner_determined:
-            return self.winner, self.winning_ticket
+            
+        # Проверка на пересечение времени с другими розыгрышами
+        overlapping_prizes = Prize.objects.exclude(pk=self.pk).filter(
+            models.Q(start_date__lte=self.start_date, end_date__gte=self.start_date) |  # Начало нового розыгрыша внутри существующего
+            models.Q(start_date__lte=self.end_date, end_date__gte=self.end_date) |      # Конец нового розыгрыша внутри существующего
+            models.Q(start_date__gte=self.start_date, end_date__lte=self.end_date)      # Существующий розыгрыш внутри нового
+        )
         
-        # Получаем все оплаченные билеты для этого розыгрыша
-        tickets = Ticket.objects.filter(prize=self, is_paid=True)
-        if not tickets.exists():
-            return None, None
-        
-        # Используем случайный выбор для определения победителя
-        import random
-        winning_ticket = random.choice(tickets)
-        
-        self.winner = winning_ticket.user
-        self.winning_ticket = winning_ticket.ticket_number
-        self.winner_determined = True
-        self.is_active = False  # Деактивируем розыгрыш после определения победителя
-        self.save()
-        
-        return self.winner, self.winning_ticket
+        if overlapping_prizes.exists():
+            overlapping_prize = overlapping_prizes.first()
+            
+            # Явно преобразуем время в московское
+            start_date_moscow = timezone.localtime(overlapping_prize.start_date)
+            end_date_moscow = timezone.localtime(overlapping_prize.end_date)
+            
+            raise ValidationError(
+                f"Время розыгрыша пересекается с существующим розыгрышем '{overlapping_prize.title}' "
+                f"({start_date_moscow.strftime('%d.%m.%Y %H:%M')} - {end_date_moscow.strftime('%d.%m.%Y %H:%M')})"
+            )
     
     def save(self, *args, **kwargs):
         """Переопределение метода сохранения для создания билетов."""
@@ -132,6 +119,25 @@ class Prize(models.Model):
         # Сохраняем все билеты одним запросом
         Ticket.objects.bulk_create(tickets)
         return tickets
+        
+    def get_participants(self):
+        """Получить список участников розыгрыша с их билетами."""
+        participants = {}
+        
+        # Получаем все оплаченные билеты для этого розыгрыша
+        tickets = Ticket.objects.filter(prize=self, is_paid=True).select_related('user')
+        
+        for ticket in tickets:
+            if ticket.user:
+                user_id = ticket.user.pk
+                if user_id not in participants:
+                    participants[user_id] = {
+                        'user': ticket.user,
+                        'tickets': []
+                    }
+                participants[user_id]['tickets'].append(ticket.ticket_number)
+        
+        return participants
 
 
 class Ticket(models.Model):
@@ -154,7 +160,7 @@ class Ticket(models.Model):
 
     def __str__(self):
         prize_title = self.prize.title if self.prize else "Неизвестный розыгрыш"
-        return f"Билет #{self.ticket_number} - {prize_title}"
+        return f"Билет {self.ticket_number} - {prize_title}"
 
     def save(self, *args, **kwargs):
         """Проверка срока резервации."""
@@ -206,10 +212,8 @@ class Payment(models.Model):
 
 
 class FAQ(models.Model):
-    """Модель часто задаваемых вопросов."""
-    question = models.CharField(max_length=255, verbose_name="Вопрос")
-    answer = models.TextField(verbose_name="Ответ")
-    order = models.PositiveIntegerField(default=0, verbose_name="Порядок")
+    """Модель для хранения единого текста FAQ."""
+    text = models.TextField(verbose_name="Текст FAQ")
     is_active = models.BooleanField(default=True, verbose_name="Активен")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Дата создания")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="Дата обновления")
@@ -217,7 +221,13 @@ class FAQ(models.Model):
     class Meta:
         verbose_name = "FAQ"
         verbose_name_plural = "FAQ"
-        ordering = ['order', 'created_at']
 
     def __str__(self):
-        return self.question 
+        return "Текст FAQ"
+    
+    def save(self, *args, **kwargs):
+        """Переопределение метода сохранения для обеспечения единственности записи."""
+        # Если это новая запись и уже есть активная запись, деактивируем все остальные
+        if self.is_active:
+            FAQ.objects.exclude(pk=self.pk).update(is_active=False)
+        super().save(*args, **kwargs) 

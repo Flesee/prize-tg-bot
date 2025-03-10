@@ -240,6 +240,7 @@ async def check_and_release_expired_reservations() -> int:
 async def check_and_finish_expired_prizes():
     """
     Проверяет и завершает розыгрыши, у которых истекло время.
+    Возвращает список завершенных розыгрышей.
     """
     try:
         async with async_session() as session:
@@ -247,28 +248,26 @@ async def check_and_finish_expired_prizes():
             now = datetime.now()
             query = select(Prize).where(
                 Prize.is_active == True,
-                Prize.end_date < now,
-                Prize.winner_determined == False
+                Prize.end_date < now
             )
             result = await session.execute(query)
             expired_prizes = result.scalars().all()
             
-            count = 0
+            finished_prizes = []
             for prize in expired_prizes:
                 # Деактивируем розыгрыш
                 prize.is_active = False
                 prize.updated_at = now
-                count += 1
-                logger.info(f"Розыгрыш '{prize.title}' (ID: {prize.id}) автоматически завершен по истечении времени")
+                finished_prizes.append(prize)
             
-            if count > 0:
+            if finished_prizes:
                 await session.commit()
+                logger.info(f"Завершено {len(finished_prizes)} розыгрышей с истекшим сроком")
             
-            return count
-    
+            return finished_prizes
     except Exception as e:
-        logger.error(f"Ошибка при проверке розыгрышей с истекшим сроком: {e}")
-        return 0
+        logger.error(f"Ошибка при проверке и завершении розыгрышей: {e}")
+        return []
 
 
 async def parse_ticket_numbers(text: str) -> List[int]:

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import aiohttp
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import and_, or_
+from sqlalchemy import Table, Column, Integer, String, Boolean, DateTime, ForeignKey, Float, MetaData, and_, or_, insert
 
 from config import YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY, YOOKASSA_API_URL
 from database.models import Ticket, TelegramUser, Prize
@@ -86,7 +86,8 @@ async def init_payment(session: AsyncSession, user_telegram_id: int, bot_usernam
             return None
         
         # Рассчитываем общую сумму
-        total_amount = len(tickets) * float(prize.ticket_price)
+        ticket_price = float(prize.ticket_price or 0)
+        total_amount = len(tickets) * ticket_price
         
         # Формируем уникальный ключ для идемпотентности запросов
         idempotence_key = str(uuid.uuid4())
@@ -138,8 +139,8 @@ async def init_payment(session: AsyncSession, user_telegram_id: int, bot_usernam
                 result = await response.json()
                 
                 if result.get("id"):
-                    # Обновляем время резервации билетов на 15 минут
-                    reserved_until = datetime.now() + timedelta(minutes=15)
+                    # Обновляем время резервации билетов на 10 минут
+                    reserved_until = datetime.now() + timedelta(minutes=10)
                     for ticket in tickets:
                         ticket.reserved_until = reserved_until
                         ticket.updated_at = datetime.now()
@@ -229,33 +230,63 @@ async def update_tickets_payment_status(session: AsyncSession, payment_id: str, 
         Tuple[bool, List[Ticket]]: Успешность операции и список оплаченных билетов
     """
     try:
-        # Находим билет с ID платежа
-        ticket_query = select(Ticket).where(Ticket.payment_id == payment_id)
-        ticket_result = await session.execute(ticket_query)
-        ticket = ticket_result.scalar_one_or_none()
+        # Проверяем, является ли это бесплатным платежом
+        is_free_payment = payment_id.startswith("free_")
         
-        if not ticket:
-            logger.error(f"Билет с ID платежа {payment_id} не найден")
-            return False, []
-        
-        # Находим все билеты пользователя для данного приза
-        user_id = ticket.user_id
-        prize_id = ticket.prize_id
-        
-        tickets_query = select(Ticket).where(
-            and_(
-                Ticket.user_id == user_id,
-                Ticket.prize_id == prize_id,
-                Ticket.is_reserved == True,
-                Ticket.is_paid == False
+        if is_free_payment:
+            # Для бесплатных билетов извлекаем user_id и prize_id из payment_id
+            # Формат: free_{user_id}_{prize_id}_{timestamp}
+            parts = payment_id.split("_")
+            if len(parts) >= 3:
+                user_id = int(parts[1])
+                prize_id = int(parts[2])
+                
+                # Находим все билеты пользователя для данного приза
+                tickets_query = select(Ticket).where(
+                    and_(
+                        Ticket.user_id == user_id,
+                        Ticket.prize_id == prize_id,
+                        Ticket.is_reserved == True,
+                        Ticket.is_paid == False
+                    )
+                )
+                tickets_result = await session.execute(tickets_query)
+                tickets = tickets_result.scalars().all()
+                
+                if not tickets:
+                    logger.warning(f"Не найдены зарезервированные билеты для пользователя {user_id} и приза {prize_id}")
+                    return False, []
+            else:
+                logger.error(f"Неверный формат ID бесплатного платежа: {payment_id}")
+                return False, []
+        else:
+            # Для обычных платежей ищем билет с ID платежа
+            ticket_query = select(Ticket).where(Ticket.payment_id == payment_id)
+            ticket_result = await session.execute(ticket_query)
+            ticket = ticket_result.scalar_one_or_none()
+            
+            if not ticket:
+                logger.error(f"Билет с ID платежа {payment_id} не найден")
+                return False, []
+            
+            # Находим все билеты пользователя для данного приза
+            user_id = ticket.user_id
+            prize_id = ticket.prize_id
+            
+            tickets_query = select(Ticket).where(
+                and_(
+                    Ticket.user_id == user_id,
+                    Ticket.prize_id == prize_id,
+                    Ticket.is_reserved == True,
+                    Ticket.is_paid == False
+                )
             )
-        )
-        tickets_result = await session.execute(tickets_query)
-        tickets = tickets_result.scalars().all()
-        
-        if not tickets:
-            logger.warning(f"Не найдены зарезервированные билеты для пользователя {user_id} и приза {prize_id}")
-            return False, []
+            tickets_result = await session.execute(tickets_query)
+            tickets = tickets_result.scalars().all()
+            
+            if not tickets:
+                logger.warning(f"Не найдены зарезервированные билеты для пользователя {user_id} и приза {prize_id}")
+                return False, []
         
         # Если платеж успешен, обновляем статус билетов
         if status == "succeeded":
@@ -278,10 +309,8 @@ async def update_tickets_payment_status(session: AsyncSession, payment_id: str, 
                 return False, []
             
             # Рассчитываем общую сумму
-            total_amount = len(tickets) * float(prize.ticket_price)
-            
-            # Создаем запись в модели Payment
-            from sqlalchemy import Table, Column, Integer, String, Boolean, DateTime, ForeignKey, Float, MetaData
+            ticket_price = float(prize.ticket_price or 0)
+            total_amount = len(tickets) * ticket_price
             
             # Получаем метаданные
             metadata = MetaData()
@@ -308,11 +337,7 @@ async def update_tickets_payment_status(session: AsyncSession, payment_id: str, 
                 Column('payment_id', Integer, ForeignKey('prizes_payment.id')),
                 Column('ticket_id', Integer, ForeignKey('prizes_ticket.id'))
             )
-            
-            # Создаем запись в таблице Payment
-            from sqlalchemy import insert
-            from datetime import datetime
-            
+                
             now = datetime.now()
             
             payment_insert = insert(payment_table).values(
@@ -416,7 +441,7 @@ async def get_payment_by_id(session: AsyncSession, payment_id: str):
             return None
         
         # Рассчитываем общую сумму
-        total_amount = len(tickets) * float(prize.ticket_price)
+        total_amount = len(tickets) * float(prize.ticket_price or 0)
         
         # Возвращаем информацию о платеже
         return {

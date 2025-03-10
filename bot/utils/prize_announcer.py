@@ -11,6 +11,7 @@ from database.base import async_session
 from database.models import Prize, Ticket
 from utils.formatting import format_price
 from utils.logger import logger
+from config import CHANNEL_ID
 
 
 def make_naive(dt: datetime) -> datetime:
@@ -59,7 +60,6 @@ async def get_pending_prize() -> Optional[Prize]:
         
         query = select(Prize).where(
             (Prize.is_active == False) & 
-            (Prize.winner_determined == False) & 
             (Prize.start_date <= now) & 
             (Prize.end_date > now)
         ).order_by(Prize.start_date)
@@ -126,7 +126,7 @@ async def format_prize_message(prize: Prize, bot_username: str) -> Tuple[str, Op
     end_date = end_date_moscow.strftime("%d.%m.%Y %H:%M")
     
     # Форматируем цену билета
-    ticket_price = format_price(prize.ticket_price)
+    ticket_price = format_price(prize.ticket_price or 0)
     
     # Форматируем номера билетов
     formatted_tickets = format_ticket_numbers_for_message(available_tickets)
@@ -158,24 +158,23 @@ async def format_prize_message(prize: Prize, bot_username: str) -> Tuple[str, Op
 async def send_prize_announcement(bot: Bot, prize: Prize) -> Optional[int]:
     """
     Отправляет сообщение о розыгрыше в чат.
+    Возвращает ID сообщения, если отправка успешна.
     """
     try:
         # Получаем ID чата из переменной окружения
         chat_id = os.getenv("CHANNEL_ID")
         if not chat_id:
-            logger.error("Не указан CHANNEL_ID в .env")
+            logger.error("ID чата не указан в конфигурации")
             return None
         
-        # Получаем имя пользователя бота
         bot_info = await bot.get_me()
         bot_username = bot_info.username
-        
-        # Форматируем сообщение
+
+        # Форматируем сообщение о розыгрыше
         message_text, image_path = await format_prize_message(prize, bot_username)
         
-        # Отправляем сообщение
+        # Отправляем сообщение с изображением, если оно есть
         if image_path and os.path.exists(image_path):
-            # Если есть изображение, отправляем фото с подписью
             photo = FSInputFile(image_path)
             message = await bot.send_photo(
                 chat_id=chat_id,
@@ -183,17 +182,38 @@ async def send_prize_announcement(bot: Bot, prize: Prize) -> Optional[int]:
                 caption=message_text
             )
         else:
-            # Если нет изображения или файл не существует, отправляем текстовое сообщение
             message = await bot.send_message(
                 chat_id=chat_id,
                 text=message_text
             )
         
-        # Возвращаем ID сообщения
+        logger.info(f"Отправлено сообщение о розыгрыше {prize.id} в чат {chat_id}")
         return message.message_id
     
     except Exception as e:
         logger.error(f"Ошибка при отправке сообщения о розыгрыше: {e}")
+        return None
+
+
+async def send_prize_finished_announcement(bot: Bot, prize: Prize) -> Optional[int]:
+    """
+    Отправляет сообщение о завершении розыгрыша в чат.
+    Возвращает ID сообщения, если отправка успешна.
+    """
+    try:
+
+        message =await bot.send_message(
+            chat_id=CHANNEL_ID,
+            text="🏁 *Розыгрыш завершен!*",
+            parse_mode="Markdown",
+            reply_to_message_id=prize.chat_message_id
+        )
+        
+        logger.info(f"Отправлено сообщение о завершении розыгрыша {prize.id}")
+        return message.message_id
+    
+    except Exception as e:
+        logger.error(f"Ошибка при отправке сообщения о завершении розыгрыша: {e}")
         return None
 
 

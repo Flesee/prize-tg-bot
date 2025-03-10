@@ -3,7 +3,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from utils.logger import logger
 from database import check_and_release_expired_reservations, check_and_finish_expired_prizes
-from utils.prize_announcer import check_and_announce_prizes
+from utils.prize_announcer import check_and_announce_prizes, send_prize_finished_announcement
 
 
 # Создаем планировщик задач
@@ -33,7 +33,13 @@ async def check_expired_prizes_job():
     Задача для проверки и завершения розыгрышей с истекшим сроком.
     """
     try:
-        await check_and_finish_expired_prizes()
+        # Получаем завершенные розыгрыши
+        finished_prizes = await check_and_finish_expired_prizes()
+        
+        # Отправляем сообщение о завершении для каждого розыгрыша
+        for prize in finished_prizes:
+            await send_prize_finished_announcement(bot_instance, prize)
+            logger.info(f"Отправлено сообщение о завершении розыгрыша '{prize.title}' (ID: {prize.id})")
     except Exception as e:
         logger.error(f"Ошибка при выполнении задачи по проверке розыгрышей: {e}")
 

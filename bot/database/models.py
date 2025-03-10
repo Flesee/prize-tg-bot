@@ -45,15 +45,11 @@ class Prize(Base):
     ticket_price = sa.Column(sa.Numeric(10, 2), nullable=False)
     ticket_count = sa.Column(sa.Integer, nullable=False, default=0)
     is_active = sa.Column(sa.Boolean, nullable=False, default=False)
-    winner_id = sa.Column(sa.Integer, sa.ForeignKey('prizes_telegramuser.id'), nullable=True)
-    winning_ticket = sa.Column(sa.Integer, nullable=True)
     created_at = sa.Column(sa.DateTime, nullable=False)
     updated_at = sa.Column(sa.DateTime, nullable=False)
-    winner_determined = sa.Column(sa.Boolean, nullable=False, default=False)
     chat_message_id = sa.Column(sa.BigInteger, nullable=True)
     
     # Отношения
-    winner = sa.orm.relationship("TelegramUser", foreign_keys=[winner_id])
     tickets = sa.orm.relationship("Ticket", back_populates="prize", cascade="all, delete-orphan")
     
     def __repr__(self):
@@ -70,11 +66,8 @@ class Prize(Base):
             "ticket_price": float(self.ticket_price) if self.ticket_price else None,
             "ticket_count": self.ticket_count,
             "is_active": self.is_active,
-            "winner_id": self.winner_id,
-            "winning_ticket": self.winning_ticket,
             "created_at": self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
-            "updated_at": self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else self.updated_at,
-            "winner_determined": self.winner_determined
+            "updated_at": self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else self.updated_at
         }
     
     def get_available_tickets(self) -> List[int]:
@@ -130,27 +123,23 @@ class Ticket(Base):
 
 
 class FAQ(Base):
-    """Модель часто задаваемых вопросов."""
+    """Модель для хранения единого текста FAQ."""
     __tablename__ = "prizes_faq"
     
     id = sa.Column(sa.Integer, primary_key=True)
-    question = sa.Column(sa.String(255), nullable=False)
-    answer = sa.Column(sa.Text, nullable=False)
-    order = sa.Column(sa.Integer, default=0, nullable=False)
+    text = sa.Column(sa.Text, nullable=False)
     is_active = sa.Column(sa.Boolean, default=True, nullable=False)
     created_at = sa.Column(sa.DateTime, nullable=False)
     updated_at = sa.Column(sa.DateTime, nullable=False)
     
     def __repr__(self):
-        return f"<FAQ(id={self.id}, question={self.question})>"
+        return f"<FAQ(id={self.id})>"
     
     def to_dict(self):
         """Преобразует объект модели в словарь."""
         return {
             "id": self.id,
-            "question": self.question,
-            "answer": self.answer,
-            "order": self.order,
+            "text": self.text,
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat() if isinstance(self.created_at, datetime) else self.created_at,
             "updated_at": self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else self.updated_at
