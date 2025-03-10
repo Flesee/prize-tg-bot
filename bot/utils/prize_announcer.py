@@ -12,6 +12,7 @@ from database.models import Prize, Ticket
 from utils.formatting import format_price
 from utils.logger import logger
 from config import CHANNEL_ID
+from database.prize_repository import convert_to_moscow_time, get_current_moscow_time
 
 
 def make_naive(dt: datetime) -> datetime:
@@ -21,24 +22,6 @@ def make_naive(dt: datetime) -> datetime:
     if dt.tzinfo is not None:
         return dt.replace(tzinfo=None)
     return dt
-
-
-def convert_to_moscow_time(dt: datetime) -> datetime:
-    """
-    Преобразует время из UTC в московское время (UTC+3).
-    """
-    # Проверяем, имеет ли дата информацию о часовом поясе
-    if dt.tzinfo is None:
-        # Если нет, предполагаем, что это UTC
-        dt = dt.replace(tzinfo=timezone.utc)
-    
-    # Определяем смещение для московского времени (UTC+3)
-    moscow_offset = timedelta(hours=3)
-    
-    # Преобразуем в московское время
-    moscow_time = dt.astimezone(timezone(moscow_offset))
-    
-    return moscow_time
 
 
 async def get_active_prize() -> Optional[Prize]:
@@ -56,7 +39,8 @@ async def get_pending_prize() -> Optional[Prize]:
     Получает розыгрыш, который должен начаться (время начала наступило, но он еще не активен).
     """
     async with async_session() as session:
-        now = make_naive(datetime.now())
+
+        now = get_current_moscow_time()
         
         query = select(Prize).where(
             (Prize.is_active == False) & 
@@ -287,12 +271,13 @@ async def deactivate_all_active_prizes() -> None:
         # Деактивируем каждый розыгрыш
         for prize in active_prizes:
             # Проверяем, не закончился ли розыгрыш
-            now = make_naive(datetime.now())
-            prize_end_date = make_naive(prize.end_date)
+            now = get_current_moscow_time()
+            
+            # Преобразуем дату окончания розыгрыша в московское время
+            prize_end_date = convert_to_moscow_time(prize.end_date)
             
             if prize_end_date <= now:
                 prize.is_active = False
-
                 session.add(prize)
                 logger.info(f"Розыгрыш {prize.id} автоматически завершен по истечении времени")
         

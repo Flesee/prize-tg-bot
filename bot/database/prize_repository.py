@@ -3,11 +3,37 @@ import re
 from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.future import select
 from sqlalchemy import func
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 
 from utils.logger import logger
 from .base import async_session
 from .models import Prize, Ticket, TelegramUser
+
+
+def convert_to_moscow_time(dt: datetime) -> datetime:
+    """
+    Преобразует время из UTC в московское время (UTC+3).
+    """
+    # Проверяем, имеет ли дата информацию о часовом поясе
+    if dt.tzinfo is None:
+        # Если нет, предполагаем, что это UTC
+        dt = dt.replace(tzinfo=timezone.utc)
+    
+    # Определяем смещение для московского времени (UTC+3)
+    moscow_offset = timedelta(hours=3)
+    
+    # Преобразуем в московское время
+    moscow_time = dt.astimezone(timezone(moscow_offset))
+    
+    return moscow_time
+
+
+def get_current_moscow_time() -> datetime:
+    """
+    Возвращает текущее время в московском часовом поясе.
+    """
+    now_utc = datetime.now(timezone.utc)
+    return convert_to_moscow_time(now_utc)
 
 
 async def get_active_prize() -> Optional[Dict[str, Any]]:
@@ -244,21 +270,26 @@ async def check_and_finish_expired_prizes():
     """
     try:
         async with async_session() as session:
-            # Получаем все активные розыгрыши с истекшим сроком
-            now = datetime.now()
-            query = select(Prize).where(
-                Prize.is_active == True,
-                Prize.end_date < now
-            )
+            # Получаем текущее время в московском часовом поясе
+            now = get_current_moscow_time()
+            
+            # Получаем все активные розыгрыши
+            query = select(Prize).where(Prize.is_active == True)
             result = await session.execute(query)
-            expired_prizes = result.scalars().all()
+            active_prizes = result.scalars().all()
             
             finished_prizes = []
-            for prize in expired_prizes:
-                # Деактивируем розыгрыш
-                prize.is_active = False
-                prize.updated_at = now
-                finished_prizes.append(prize)
+            for prize in active_prizes:
+                # Преобразуем дату окончания розыгрыша в московское время
+                prize_end_date = convert_to_moscow_time(prize.end_date)
+                
+                # Проверяем, истекло ли время розыгрыша
+                if prize_end_date < now:
+                    # Деактивируем розыгрыш
+                    prize.is_active = False
+                    prize.updated_at = datetime.now()
+                    finished_prizes.append(prize)
+                    logger.info(f"Розыгрыш {prize.id} завершен по истечении времени.")
             
             if finished_prizes:
                 await session.commit()
